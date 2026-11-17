@@ -1,0 +1,77 @@
+name: Andy issue trigger (diagnostic)
+
+on:
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  diagnose:
+    if: >-
+      github.repository_id == '1461109385' &&
+      github.event.label.name == 'andy-task' &&
+      github.event.sender.type == 'User' &&
+      github.event.sender.id == 323095460 &&
+      github.actor_id == '323095460' &&
+      github.triggering_actor == 'jijanek'
+    concurrency:
+      group: andy-issue-${{ github.event.issue.number }}
+      cancel-in-progress: false
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Record diagnostic receipt
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          retries: 0
+          script: |
+            const { action, issue, label, repository, sender } = context.payload;
+            if (
+              context.eventName !== 'issues' || action !== 'labeled' ||
+              repository?.id !== 1461109385 || label?.name !== 'andy-task' ||
+              sender?.type !== 'User' || sender?.id !== 323095460 ||
+              !Number.isSafeInteger(issue?.number) || issue.number < 1 ||
+              issue.pull_request
+            ) {
+              core.notice('Ignored: the event did not pass the Andy diagnostics gate.');
+              return;
+            }
+
+            const request = { ...context.repo, issue_number: issue.number };
+            const marker = '<!-- andy:issue-trigger:diagnostic:v1 -->';
+            const { data: current } = await github.rest.issues.get(request);
+            if (current.state !== 'open' || current.pull_request ||
+                !current.labels.some(item => item.name === 'andy-task')) {
+              core.notice('Ignored: the issue is closed or no longer has andy-task.');
+              return;
+            }
+
+            const pages = github.paginate.iterator(github.rest.issues.listComments, {
+              ...request,
+              per_page: 100
+            });
+            for await (const { data: comments } of pages) {
+              if (comments.some(comment =>
+                comment.user?.id === 41898282 && comment.user?.type === 'Bot' &&
+                comment.body?.split('\n', 1)[0] === marker
+              )) {
+                core.notice('Duplicate: an Andy diagnostic receipt already exists.');
+                return;
+              }
+            }
+
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.createComment({
+              ...request,
+              body: [
+                marker,
+                'Andy přijal událost se štítkem `andy-task` v diagnostickém režimu.',
+                'AI ani kód ze zadání se nespustily.',
+                `[Diagnostický běh](${runUrl})`
+              ].join('\n\n')
+            });
+            core.notice('Accepted: recorded the Andy diagnostic receipt.');
